@@ -173,6 +173,10 @@ func (s *hookedStateDB) AddSlotToAccessList(addr common.Address, slot common.Has
 	s.inner.AddSlotToAccessList(addr, slot)
 }
 
+func (s *hookedStateDB) RecordAccountAccess(addr common.Address) {
+	s.inner.RecordAccountAccess(addr)
+}
+
 func (s *hookedStateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
 	s.inner.Prepare(rules, sender, coinbase, dest, precompiles, txAccesses)
 }

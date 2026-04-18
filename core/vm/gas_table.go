@@ -628,6 +628,7 @@ func gasSelfdestruct8037(evm *EVM, contract *Contract, stack *Stack, mem *Memory
 	if contract.Gas.RegularGas < gas.RegularGas {
 		return gas, nil
 	}
+	evm.StateDB.RecordAccountAccess(address)
 	// if empty and transfers value
 	if evm.StateDB.Empty(address) && evm.StateDB.GetBalance(contract.Address()).Sign() != 0 {
 		gas.StateGas += params.AccountCreationSize * evm.Context.CostPerGasByte

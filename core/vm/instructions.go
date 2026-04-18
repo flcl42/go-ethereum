@@ -251,6 +251,7 @@ func opAddress(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 func opBalance(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	slot := scope.Stack.peek()
 	address := common.Address(slot.Bytes20())
+	evm.StateDB.RecordAccountAccess(address)
 	slot.Set(evm.StateDB.GetBalance(address))
 	return nil, nil
 }
@@ -333,7 +334,9 @@ func opReturnDataCopy(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error)
 
 func opExtCodeSize(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	slot := scope.Stack.peek()
-	slot.SetUint64(uint64(evm.StateDB.GetCodeSize(slot.Bytes20())))
+	address := common.Address(slot.Bytes20())
+	evm.StateDB.RecordAccountAccess(address)
+	slot.SetUint64(uint64(evm.StateDB.GetCodeSize(address)))
 	return nil, nil
 }
 
@@ -371,6 +374,7 @@ func opExtCodeCopy(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 		uint64CodeOffset = math.MaxUint64
 	}
 	addr := common.Address(a.Bytes20())
+	evm.StateDB.RecordAccountAccess(addr)
 	code := evm.StateDB.GetCode(addr)
 	codeCopy := getData(code, uint64CodeOffset, length.Uint64())
 	scope.Memory.Set(memOffset.Uint64(), length.Uint64(), codeCopy)
@@ -407,6 +411,7 @@ func opExtCodeCopy(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 func opExtCodeHash(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	slot := scope.Stack.peek()
 	address := common.Address(slot.Bytes20())
+	evm.StateDB.RecordAccountAccess(address)
 	if evm.StateDB.Empty(address) {
 		slot.Clear()
 	} else {

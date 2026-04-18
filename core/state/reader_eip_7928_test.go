@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/internal/testrand"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
 
@@ -177,28 +178,27 @@ func (r *noopCodeReader) CodeSize(addr common.Address, codeHash common.Hash) (in
 func TestReaderWithTracker(t *testing.T) {
 	var r Reader = newReaderTracker(newReader(&noopCodeReader{}, &noopStateReader{}))
 
-	accesses := map[common.Address]map[common.Hash]struct{}{
-		testrand.Address(): makeFakeSlots(10),
-		testrand.Address(): makeFakeSlots(0),
-	}
-	for addr, slots := range accesses {
-		r.Account(addr)
-		for slot := range slots {
-			r.Storage(addr, slot)
-		}
+	var (
+		accountReadOnly = testrand.Address()
+		explicitAccount = testrand.Address()
+		storageAccount  = testrand.Address()
+		storageSlots    = makeFakeSlots(10)
+		tracker         = r.(StateReaderTracker)
+	)
+	r.Account(accountReadOnly)
+	tracker.TouchAccount(explicitAccount)
+	for slot := range storageSlots {
+		r.Storage(storageAccount, slot)
 	}
 	got := r.(StateReaderTracker).GetStateAccessList()
-	if len(got) != len(accesses) {
-		t.Fatalf("Unexpected access list, want: %d, got: %d", len(accesses), len(got))
+	if _, ok := got[accountReadOnly]; ok {
+		t.Fatal("low-level account reads must not be tracked as BAL account-only reads")
 	}
-	for addr, slots := range got {
-		entry, ok := accesses[addr]
-		if !ok {
-			t.Fatal("Unexpected access list")
-		}
-		if !maps.Equal(slots, entry) {
-			t.Fatal("Unexpected slots")
-		}
+	if slots, ok := got[explicitAccount]; !ok || len(slots) != 0 {
+		t.Fatal("explicit account access should be tracked without storage slots")
+	}
+	if !maps.Equal(got[storageAccount], storageSlots) {
+		t.Fatal("storage reads should be tracked by slot")
 	}
 }
 
@@ -209,10 +209,10 @@ func TestReaderWithTracker(t *testing.T) {
 // transactions read without hitting the reader, causing the BAL to be incomplete.
 func TestTrackerSurvivesStateDBCache(t *testing.T) {
 	var (
-		sdb            = NewDatabaseForTesting()
-		statedb, _     = New(types.EmptyRootHash, sdb)
-		addr           = common.HexToAddress("0xaaaa")
-		slot           = common.HexToHash("0x01")
+		sdb        = NewDatabaseForTesting()
+		statedb, _ = New(types.EmptyRootHash, sdb)
+		addr       = common.HexToAddress("0xaaaa")
+		slot       = common.HexToHash("0x01")
 	)
 	// Set up committed state with one account that has a storage slot.
 	statedb.SetBalance(addr, uint256.NewInt(1e18), tracing.BalanceChangeUnspecified)
@@ -231,6 +231,7 @@ func TestTrackerSurvivesStateDBCache(t *testing.T) {
 
 	// Simulate a failed transaction: read account and storage, then revert.
 	snap := live.Snapshot()
+	live.RecordAccountAccess(addr)
 	live.GetNonce(addr)
 	live.GetState(addr, slot)
 
@@ -250,8 +251,11 @@ func TestTrackerSurvivesStateDBCache(t *testing.T) {
 		t.Fatal("tracker should be empty after Clear")
 	}
 
-	// Simulate the next transaction reading the same account and slot.
-	// Both hit the stateObjects/originStorage caches.
+	// Simulate the next transaction reading the same account and slot. The
+	// account load hits stateObjects and is recorded only by the explicit EVM
+	// access marker; the storage load hits originStorage and is still tracked by
+	// the state object cache hook.
+	live.RecordAccountAccess(addr)
 	live.GetNonce(addr)
 	live.GetState(addr, slot)
 
@@ -261,5 +265,27 @@ func TestTrackerSurvivesStateDBCache(t *testing.T) {
 	}
 	if _, ok := reads[addr][slot]; !ok {
 		t.Fatal("slot must be tracked on cache hit (storage)")
+	}
+}
+
+func TestRecordAccountAccessIncludesExplicitSystemAddressAccess(t *testing.T) {
+	var (
+		sdb          = NewDatabaseForTesting()
+		live, _      = New(types.EmptyRootHash, sdb)
+		tracked      = NewReaderWithTracker(live.Reader())
+		withTrace, _ = NewWithReader(types.EmptyRootHash, sdb, tracked)
+		addr         = common.HexToAddress("0x1234")
+		tracker      = withTrace.Reader().(StateReaderTracker)
+	)
+
+	withTrace.RecordAccountAccess(params.SystemAddress)
+	withTrace.RecordAccountAccess(addr)
+
+	reads := tracker.GetStateAccessList()
+	if slots, ok := reads[params.SystemAddress]; !ok || len(slots) != 0 {
+		t.Fatal("explicit system-address account access should be tracked")
+	}
+	if slots, ok := reads[addr]; !ok || len(slots) != 0 {
+		t.Fatal("regular account access should still be tracked")
 	}
 }

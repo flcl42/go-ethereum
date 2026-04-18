@@ -291,8 +291,8 @@ type StateReaderTracker interface {
 	GetStateAccessList() bal.StateAccesses
 	Clear()
 
-	// TouchAccount records an account access without performing a database read.
-	// This is used to ensure cache hits in the StateDB are still tracked for BAL.
+	// TouchAccount records an EVM-level account access without performing a
+	// database read.
 	TouchAccount(addr common.Address)
 
 	// TouchStorage records a storage slot access without performing a database read.
@@ -316,12 +316,10 @@ func newReaderTracker(reader Reader) *readerTracker {
 	}
 }
 
-// Account implements StateReader, tracking the accessed address locally.
+// Account implements StateReader. Account-only BAL reads are recorded explicitly
+// by the EVM via TouchAccount; low-level account loads also happen during
+// validation, caching and state-root work and must not become BAL entries.
 func (r *readerTracker) Account(addr common.Address) (*types.StateAccount, error) {
-	_, exists := r.access[addr]
-	if !exists {
-		r.access[addr] = make(bal.StorageAccessList)
-	}
 	return r.Reader.Account(addr)
 }
 

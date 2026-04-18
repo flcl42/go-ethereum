@@ -177,8 +177,12 @@ func makeCallVariantGasCallEIP2929(oldCalculator gasFunc, addressPosition int) g
 		// - memory expansion
 		// - 63/64ths rule
 		gas, err := oldCalculator(evm, contract, stack, mem, memorySize)
-		if warmAccess || err != nil {
+		if err != nil {
 			return gas, err
+		}
+		evm.StateDB.RecordAccountAccess(addr)
+		if warmAccess {
+			return gas, nil
 		}
 		// In case of a cold access, we temporarily add the cold charge back, and also
 		// add it to the returned gas. By adding it to the return, it will be charged
@@ -246,6 +250,7 @@ func makeSelfdestructGasFn(refundsEnabled bool) gasFunc {
 		if contract.Gas.RegularGas < gas {
 			return GasCosts{RegularGas: gas}, nil
 		}
+		evm.StateDB.RecordAccountAccess(address)
 
 		// if empty and transfers value
 		if evm.StateDB.Empty(address) && evm.StateDB.GetBalance(contract.Address()).Sign() != 0 {
@@ -329,6 +334,7 @@ func makeCallVariantGasCallEIP7702(intrinsicFunc intrinsicGasFunc) gasFunc {
 		if contract.Gas.RegularGas < intrinsicCost {
 			return GasCosts{}, ErrOutOfGas
 		}
+		evm.StateDB.RecordAccountAccess(addr)
 
 		// Check if code is a delegation and if so, charge for resolution.
 		if target, ok := types.ParseDelegation(evm.StateDB.GetCode(addr)); ok {
@@ -409,6 +415,7 @@ func makeCallVariantGasCallEIP8037(intrinsicFunc intrinsicGasFunc, stateGasFunc 
 		if !contract.UseGas(GasCosts{RegularGas: intrinsicCost}, evm.Config.Tracer, tracing.GasChangeCallOpCode) {
 			return GasCosts{}, ErrOutOfGas
 		}
+		evm.StateDB.RecordAccountAccess(addr)
 
 		// EIP-7702 delegation check (regular gas, directly).
 		if target, ok := types.ParseDelegation(evm.StateDB.GetCode(addr)); ok {

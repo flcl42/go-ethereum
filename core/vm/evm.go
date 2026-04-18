@@ -257,6 +257,7 @@ func (evm *EVM) Call(caller common.Address, addr common.Address, input []byte, g
 		return nil, gas, GasUsed{}, ErrInsufficientBalance
 	}
 	snapshot := evm.StateDB.Snapshot()
+	evm.StateDB.RecordAccountAccess(addr)
 
 	p, isPrecompile := evm.precompile(addr)
 	if !evm.StateDB.Exist(addr) {
@@ -346,6 +347,7 @@ func (evm *EVM) CallCode(caller common.Address, addr common.Address, input []byt
 		return nil, gas, GasUsed{}, ErrInsufficientBalance
 	}
 	var snapshot = evm.StateDB.Snapshot()
+	evm.StateDB.RecordAccountAccess(addr)
 
 	// It is allowed to call precompiles, even via delegatecall
 	if p, isPrecompile := evm.precompile(addr); isPrecompile {
@@ -398,6 +400,7 @@ func (evm *EVM) DelegateCall(originCaller common.Address, caller common.Address,
 		return nil, gas, GasUsed{}, ErrDepth
 	}
 	var snapshot = evm.StateDB.Snapshot()
+	evm.StateDB.RecordAccountAccess(addr)
 
 	// It is allowed to call precompiles, even via delegatecall
 	if p, isPrecompile := evm.precompile(addr); isPrecompile {
@@ -446,6 +449,7 @@ func (evm *EVM) StaticCall(caller common.Address, addr common.Address, input []b
 		return nil, gas, GasUsed{}, ErrDepth
 	}
 	var snapshot = evm.StateDB.Snapshot()
+	evm.StateDB.RecordAccountAccess(addr)
 
 	evm.StateDB.AddBalance(addr, new(uint256.Int), tracing.BalanceChangeTouchAccount)
 
@@ -524,6 +528,7 @@ func (evm *EVM) create(caller common.Address, code []byte, gas GasBudget, value 
 	if evm.chainRules.IsEIP2929 {
 		evm.StateDB.AddAddressToAccessList(address)
 	}
+	evm.StateDB.RecordAccountAccess(address)
 	// Ensure there's no existing contract already at the designated address.
 	// Account is regarded as existent if any of these three conditions is met:
 	// - the nonce is non-zero
@@ -674,6 +679,7 @@ func (evm *EVM) resolveCode(addr common.Address) []byte {
 	}
 	if target, ok := types.ParseDelegation(code); ok {
 		// Note we only follow one level of delegation.
+		evm.StateDB.RecordAccountAccess(target)
 		return evm.StateDB.GetCode(target)
 	}
 	return code
@@ -688,6 +694,7 @@ func (evm *EVM) resolveCodeHash(addr common.Address) common.Hash {
 		code := evm.StateDB.GetCode(addr)
 		if target, ok := types.ParseDelegation(code); ok {
 			// Note we only follow one level of delegation.
+			evm.StateDB.RecordAccountAccess(target)
 			return evm.StateDB.GetCodeHash(target)
 		}
 	}

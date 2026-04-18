@@ -184,3 +184,104 @@ func TestCreateGas(t *testing.T) {
 		}
 	}
 }
+
+func TestSelfdestruct8037TracksBeneficiaryBeforeNewAccountOOG(t *testing.T) {
+	var (
+		contract    = common.HexToAddress("0xcccc")
+		beneficiary = common.HexToAddress("0x021cb081d2c4bce797eafbc11496f38a911d76f9")
+		code        = append(append([]byte{byte(PUSH20)}, beneficiary.Bytes()...), byte(SELFDESTRUCT))
+		db          = state.NewDatabaseForTesting()
+		setup, _    = state.New(types.EmptyRootHash, db)
+	)
+	setup.CreateAccount(contract)
+	setup.SetBalance(contract, uint256.NewInt(1), tracing.BalanceChangeUnspecified)
+	setup.SetCode(contract, code, tracing.CodeChangeUnspecified)
+	root, err := setup.Commit(0, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TrieDB().Commit(root, false); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := db.Reader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracked := state.NewReaderWithTracker(reader)
+	statedb, err := state.NewWithReader(root, db, tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := statedb.Reader().(state.StateReaderTracker)
+
+	zero := uint64(0)
+	chainConfig := *params.MergedTestChainConfig
+	chainConfig.AmsterdamTime = &zero
+	chainConfig.OsakaTime = nil
+	chainConfig.VerkleTime = nil
+	evm := NewEVM(BlockContext{
+		CanTransfer:    func(StateDB, common.Address, *uint256.Int) bool { return true },
+		Transfer:       func(StateDB, common.Address, common.Address, *uint256.Int, *params.Rules) {},
+		BlockNumber:    big.NewInt(0),
+		Time:           0,
+		CostPerGasByte: 1174,
+	}, statedb, &chainConfig, Config{})
+
+	_, _, _, err = evm.Call(common.Address{}, contract, nil, GasCosts{RegularGas: 10_350}, new(uint256.Int))
+	if !errors.Is(err, ErrOutOfGas) {
+		t.Fatalf("expected OOG, got %v", err)
+	}
+	if _, ok := tracker.GetStateAccessList()[beneficiary]; !ok {
+		t.Fatalf("beneficiary %s must be tracked after selfdestruct beneficiary access", beneficiary)
+	}
+}
+
+func TestBalanceTracksExplicitSystemAddressAccess(t *testing.T) {
+	var (
+		contract = common.HexToAddress("0xcccc")
+		code     = append(append([]byte{byte(PUSH20)}, params.SystemAddress.Bytes()...), byte(BALANCE), byte(STOP))
+		db       = state.NewDatabaseForTesting()
+		setup, _ = state.New(types.EmptyRootHash, db)
+	)
+	setup.CreateAccount(contract)
+	setup.SetCode(contract, code, tracing.CodeChangeUnspecified)
+	root, err := setup.Commit(0, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TrieDB().Commit(root, false); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := db.Reader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracked := state.NewReaderWithTracker(reader)
+	statedb, err := state.NewWithReader(root, db, tracked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := statedb.Reader().(state.StateReaderTracker)
+
+	zero := uint64(0)
+	chainConfig := *params.MergedTestChainConfig
+	chainConfig.AmsterdamTime = &zero
+	chainConfig.OsakaTime = nil
+	chainConfig.VerkleTime = nil
+	evm := NewEVM(BlockContext{
+		CanTransfer: func(StateDB, common.Address, *uint256.Int) bool { return true },
+		Transfer:    func(StateDB, common.Address, common.Address, *uint256.Int, *params.Rules) {},
+		BlockNumber: big.NewInt(0),
+		Time:        0,
+	}, statedb, &chainConfig, Config{})
+
+	_, _, _, err = evm.Call(common.Address{}, contract, nil, GasCosts{RegularGas: 100_000}, new(uint256.Int))
+	if err != nil {
+		t.Fatalf("expected successful call, got %v", err)
+	}
+	if _, ok := tracker.GetStateAccessList()[params.SystemAddress]; !ok {
+		t.Fatalf("explicit read of system address %s must be tracked", params.SystemAddress)
+	}
+}
