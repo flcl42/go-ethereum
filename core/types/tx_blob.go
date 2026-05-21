@@ -89,7 +89,7 @@ func NewBlobTxSidecar(version byte, blobs []kzg4844.Blob, commitments []kzg4844.
 func (sc *BlobTxSidecar) BlobHashes() []common.Hash {
 	hasher := sha256.New()
 	h := make([]common.Hash, len(sc.Commitments))
-	for i := range sc.Blobs {
+	for i := range sc.Commitments {
 		h[i] = kzg4844.CalcBlobHashV1(hasher, &sc.Commitments[i])
 	}
 	return h
@@ -134,7 +134,10 @@ func (sc *BlobTxSidecar) ToV1() error {
 // encodedSize computes the RLP size of the sidecar elements. This does NOT return the
 // encoded size of the BlobTxSidecar, it's just a helper for tx.Size().
 func (sc *BlobTxSidecar) encodedSize() uint64 {
-	var blobs, commitments, proofs uint64
+	var version, blobs, commitments, proofs uint64
+	if sc.Version == BlobSidecarVersion1 {
+		version = 1
+	}
 	for i := range sc.Blobs {
 		blobs += rlp.BytesSize(sc.Blobs[i][:])
 	}
@@ -144,7 +147,7 @@ func (sc *BlobTxSidecar) encodedSize() uint64 {
 	for i := range sc.Proofs {
 		proofs += rlp.BytesSize(sc.Proofs[i][:])
 	}
-	return rlp.ListSize(blobs) + rlp.ListSize(commitments) + rlp.ListSize(proofs)
+	return version + rlp.ListSize(blobs) + rlp.ListSize(commitments) + rlp.ListSize(proofs)
 }
 
 // ValidateBlobCommitmentHashes checks whether the given hashes correspond to the
@@ -206,6 +209,14 @@ type blobTxWithBlobsV1 struct {
 	Proofs      []kzg4844.Proof
 }
 
+type blobTxWithSparseBlobsV1 struct {
+	BlobTx      *BlobTx
+	Version     byte
+	Blobs       [][]byte
+	Commitments []kzg4844.Commitment
+	Proofs      []kzg4844.Proof
+}
+
 func (btx *blobTxWithBlobsV0) tx() *BlobTx {
 	return btx.BlobTx
 }
@@ -228,6 +239,50 @@ func (btx *blobTxWithBlobsV1) assign(sc *BlobTxSidecar) error {
 	}
 	sc.Version = BlobSidecarVersion1
 	sc.Blobs = btx.Blobs
+	sc.Commitments = btx.Commitments
+	sc.Proofs = btx.Proofs
+	return nil
+}
+
+func (btx *blobTxWithSparseBlobsV1) tx() *BlobTx {
+	return btx.BlobTx
+}
+
+func (btx *blobTxWithSparseBlobsV1) assign(sc *BlobTxSidecar) error {
+	if btx.Version != BlobSidecarVersion1 {
+		return fmt.Errorf("unsupported blob tx version %d", btx.Version)
+	}
+	if btx.BlobTx != nil && len(btx.BlobTx.BlobHashes) != 0 && len(btx.Blobs) != 0 && len(btx.Blobs) != len(btx.BlobTx.BlobHashes) {
+		return fmt.Errorf("blob sidecar blob count %d mismatches transaction blob hashes %d", len(btx.Blobs), len(btx.BlobTx.BlobHashes))
+	}
+
+	var (
+		blobs     []kzg4844.Blob
+		hasFull   bool
+		hasSparse bool
+	)
+	if len(btx.Blobs) > 0 {
+		blobs = make([]kzg4844.Blob, len(btx.Blobs))
+		for i, blob := range btx.Blobs {
+			switch len(blob) {
+			case 0:
+				hasSparse = true
+			case len(blobs[i]):
+				hasFull = true
+				copy(blobs[i][:], blob)
+			default:
+				return fmt.Errorf("invalid blob %d size %d", i, len(blob))
+			}
+		}
+	}
+	if hasFull && hasSparse {
+		return errors.New("mixed full and elided blobs in v1 blob sidecar")
+	}
+
+	sc.Version = BlobSidecarVersion1
+	if hasFull {
+		sc.Blobs = blobs
+	}
 	sc.Commitments = btx.Commitments
 	sc.Proofs = btx.Proofs
 	return nil
@@ -347,6 +402,15 @@ func (tx *BlobTx) encode(b *bytes.Buffer) error {
 		})
 
 	case tx.Sidecar.Version == BlobSidecarVersion1:
+		if len(tx.Sidecar.Blobs) == 0 && len(tx.BlobHashes) != 0 {
+			return rlp.Encode(b, &blobTxWithSparseBlobsV1{
+				BlobTx:      tx,
+				Version:     tx.Sidecar.Version,
+				Blobs:       nil,
+				Commitments: tx.Sidecar.Commitments,
+				Proofs:      tx.Sidecar.Proofs,
+			})
+		}
 		return rlp.Encode(b, &blobTxWithBlobsV1{
 			BlobTx:      tx,
 			Version:     tx.Sidecar.Version,
@@ -415,7 +479,7 @@ func (tx *BlobTx) decode(input []byte) error {
 		payload = new(blobTxWithBlobsV0)
 	} else {
 		// It has a version byte. Decode as v1, version is checked by assign()
-		payload = new(blobTxWithBlobsV1)
+		payload = new(blobTxWithSparseBlobsV1)
 	}
 	if err := rlp.DecodeBytes(input, payload); err != nil {
 		return err

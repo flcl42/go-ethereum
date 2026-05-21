@@ -78,6 +78,7 @@ var (
 	emptyBlob          = new(kzg4844.Blob)
 	emptyBlobCommit, _ = kzg4844.BlobToCommitment(emptyBlob)
 	emptyBlobProof, _  = kzg4844.ComputeBlobProof(emptyBlob, emptyBlobCommit)
+	emptyCellProofs, _ = kzg4844.ComputeCellProofs(emptyBlob)
 )
 
 func createEmptyBlobTx(key *ecdsa.PrivateKey, withSidecar bool) *Transaction {
@@ -104,4 +105,50 @@ func createEmptyBlobTxInner(withSidecar bool) *BlobTx {
 		blobtx.Sidecar = sidecar
 	}
 	return blobtx
+}
+
+func TestBlobTxWithoutBlobV1EncodingUsesEmptyBlobList(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+	blobtx := createEmptyBlobTxInner(false)
+	sidecar := NewBlobTxSidecar(BlobSidecarVersion1, []kzg4844.Blob{*emptyBlob}, []kzg4844.Commitment{emptyBlobCommit}, emptyCellProofs)
+	blobtx.BlobHashes = sidecar.BlobHashes()
+	blobtx.Sidecar = sidecar
+
+	withBlob := MustSignNewTx(key, NewCancunSigner(blobtx.ChainID.ToBig()), blobtx)
+	withoutBlob := withBlob.WithoutBlob()
+	if sidecar := withoutBlob.BlobTxSidecar(); sidecar == nil || len(sidecar.Blobs) != 0 {
+		t.Fatalf("expected sparse sidecar without local blobs, got %#v", sidecar)
+	}
+
+	encoded, err := withoutBlob.MarshalBinary()
+	if err != nil {
+		t.Fatalf("failed to encode sparse blob tx: %v", err)
+	}
+	if len(encoded) > 20_000 {
+		t.Fatalf("sparse blob tx encoding unexpectedly included full blob payload, size %d", len(encoded))
+	}
+
+	var decoded Transaction
+	if err := decoded.UnmarshalBinary(encoded); err != nil {
+		t.Fatalf("failed to decode sparse blob tx: %v", err)
+	}
+	decodedSidecar := decoded.BlobTxSidecar()
+	if decodedSidecar == nil {
+		t.Fatal("decoded sparse blob tx missing sidecar")
+	}
+	if decodedSidecar.Version != BlobSidecarVersion1 {
+		t.Fatalf("decoded sidecar version mismatch: have %d want %d", decodedSidecar.Version, BlobSidecarVersion1)
+	}
+	if len(decodedSidecar.Blobs) != 0 {
+		t.Fatalf("decoded sparse sidecar should not contain full blobs, got %d", len(decodedSidecar.Blobs))
+	}
+	if len(decodedSidecar.Commitments) != len(withBlob.BlobHashes()) {
+		t.Fatalf("decoded commitment count mismatch: have %d want %d", len(decodedSidecar.Commitments), len(withBlob.BlobHashes()))
+	}
+	if len(decodedSidecar.Proofs) != kzg4844.CellProofsPerBlob {
+		t.Fatalf("decoded cell proof count mismatch: have %d want %d", len(decodedSidecar.Proofs), kzg4844.CellProofsPerBlob)
+	}
+	if decodedSidecar.BlobHashes()[0] != withBlob.BlobHashes()[0] {
+		t.Fatalf("decoded sidecar commitment hash mismatch: have %s want %s", decodedSidecar.BlobHashes()[0], withBlob.BlobHashes()[0])
+	}
 }
